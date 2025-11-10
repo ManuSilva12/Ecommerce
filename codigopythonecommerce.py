@@ -1,6 +1,5 @@
 import mysql.connector
 from datetime import date, datetime
-from conexao import conectar
 import random
 import os
 import time
@@ -43,6 +42,7 @@ def get_db_connection(use_db=True):
 def execute_query(conn, query, params=None, fetch=False):
     """Executa consultas SQL e trata exceções."""
     try:
+        # Usa dictionary=True para retornar resultados como dicionários (mais fácil de usar)
         cursor = conn.cursor(dictionary=True)
         cursor.execute(query, params)
 
@@ -114,8 +114,9 @@ def preencher_dados_nativos(conn):
         print("Não foi possível preencher dados: Conexão inválida.")
         return
 
-    cursor = conn.cursor()
-
+    # Usamos execute_query para o restante das inserções, que gerencia o cursor.
+    # O cursor é aberto e fechado dentro da execute_query
+    
     # ========================
     # INSERIR FUNCIONÁRIOS
     # ========================
@@ -139,8 +140,12 @@ def preencher_dados_nativos(conn):
         INSERT INTO vendedor (nome, salario, tipo, causa_social, nota_media)
         VALUES (%s, %s, %s, %s, %s)
     """
+    
+    # O execute_query não tem executemany. Usamos cursor diretamente.
+    cursor = conn.cursor()
     cursor.executemany(query_func, funcionarios_data)
     conn.commit()
+    cursor.close()
     print("> 5 funcionários inseridos com sucesso.")
 
     # ========================
@@ -159,8 +164,10 @@ def preencher_dados_nativos(conn):
         INSERT INTO cliente (nome, idade, sexo, data_nascimento)
         VALUES (%s, %s, %s, %s)
     """
+    cursor = conn.cursor()
     cursor.executemany(query_cliente, clientes_data)
     conn.commit()
+    cursor.close()
     print("> 100 clientes inseridos com sucesso.")
 
     # ========================
@@ -182,8 +189,10 @@ def preencher_dados_nativos(conn):
         INSERT INTO produto (nome, descricao, quantidade_estoque, valor, id_vendedor)
         VALUES (%s, %s, %s, %s, %s)
     """
+    cursor = conn.cursor()
     cursor.executemany(query_produto, produtos_data)
     conn.commit()
+    cursor.close()
     print("> 20 produtos inseridos com sucesso.")
 
     # ========================
@@ -197,11 +206,12 @@ def preencher_dados_nativos(conn):
                ('ViaSul', 'Porto Alegre'),
                ('Correios Turbo', 'Recife')
     """
+    cursor = conn.cursor()
     cursor.execute(query_transp)
     conn.commit()
+    cursor.close()
     print("> 5 transportadoras inseridas com sucesso.")
 
-    cursor.close()
     print("\n[SUCESSO] Dados nativos inseridos com sucesso!")
 
 def criar_e_destruir_db():
@@ -220,6 +230,7 @@ def criar_e_destruir_db():
         print("[ERRO] Falha na conexão. Certifique-se de que o DB 'ecommerce' existe e está acessível.")
         return
 
+    cursor = None
     try:
         cursor = conn.cursor()
 
@@ -243,23 +254,20 @@ def criar_e_destruir_db():
         print("> Tabelas limpas com sucesso.")
 
         print("\n> Iniciando preenchimento com dados nativos...")
-        try:
-            preencher_dados_nativos(conn)
-            print("> Dados nativos inseridos com sucesso!")
-        except TypeError as te:
-            print(f"[ERRO DE TIPO] Verifique o uso de execute/executemany em 'preencher_dados_nativos': {te}")
-        except Exception as e:
-            print(f"[ERRO] Ocorreu um erro ao preencher os dados nativos: {e}")
+        preencher_dados_nativos(conn)
+        print("> Dados nativos inseridos com sucesso!")
 
-        conn.commit()
-
+    except TypeError as te:
+        print(f"[ERRO DE TIPO] Verifique o uso de execute/executemany em 'preencher_dados_nativos': {te}")
     except Exception as e:
-        print(f"[ERRO GERAL] Erro durante a tentativa de preenchimento: {e}")
+        print(f"[ERRO GERAL] Ocorreu um erro ao preencher os dados nativos: {e}")
     finally:
-        if conn and conn.is_connected():
+        if cursor:
             cursor.close()
+        if conn and conn.is_connected():
             conn.close()
-        input("Pressione Enter para continuar...")
+            
+    input("Pressione Enter para continuar...")
 
 # --- 4. Funções CRUD (Adição) ---
 
@@ -355,31 +363,64 @@ def realizar_venda(conn):
     valor_unitario = produto_info[0]['valor']
     total_item = valor_unitario * qtd
 
+    cursor = None
     try:
-        # Criar venda
-        query_venda = """
-            INSERT INTO venda (data_venda, hora_venda, valor, endereco, id_cliente, id_transporte)
-            VALUES (CURDATE(), CURTIME(), %s, %s, %s, %s)
-        """
-        id_venda = execute_query(conn, query_venda, (total_item, endereco, id_cliente, id_transporte))
-        if not id_venda:
-            raise Exception("Falha ao criar registro da venda.")
+        # TENTA USAR A STORED PROCEDURE 'VENDA' (MÉTODO PREFERENCIAL)
+        print("[INFO] Tentando registrar venda via Stored Procedure...")
+        cursor = conn.cursor()
+        
+        # O callproc deve conter todos os parâmetros necessários para a SP registrar a venda por completo
+        # (venda, item_venda e atualização de estoque).
+        # Ajuste os parâmetros conforme a sua definição real da SP "Venda".
+        # Exemplo: Venda(id_cliente, id_produto, qtd, total, endereco, id_transporte)
+        cursor.callproc("Venda", (id_cliente, id_produto, qtd, id_transporte)) 
+        
+        conn.commit()
+        
+        # A SP não retorna o ID, então assumimos sucesso
+        print("[SUCESSO] Venda realizada via Stored Procedure!")
 
-        # Inserir item
-        query_vp = "INSERT INTO venda_produto (id_venda, id_produto, qtd, valor) VALUES (%s, %s, %s, %s)"
-        execute_query(conn, query_vp, (id_venda, id_produto, qtd, total_item))
-
-        # Diminuir estoque
+    except Exception as e:
+        # SE A SP FALHAR (por permissão, erro de sintaxe, etc.), USA O MÉTODO MANUAL COMO FALLBACK
+        print(f"[AVISO] Falha ao executar SP Venda ({e}). Usando método manual...")
+        conn.rollback() # Limpa qualquer falha parcial da SP
+        cursor = None
+        
         try:
-            execute_query(conn, "CALL Venda(%s, %s, %s, %s)", (id_cliente, id_produto, qtd, id_transporte))
-        except Exception:
+            # MÉTODO MANUAL ------------------------------------------
+            # 1. Criar venda
+            cursor = conn.cursor()
+            query_venda = """
+                INSERT INTO venda (data_venda, hora_venda, valor, endereco, id_cliente, id_transporte)
+                VALUES (CURDATE(), CURTIME(), %s, %s, %s, %s)
+            """
+            cursor.execute(query_venda, (total_item, endereco, id_cliente, id_transporte))
+            id_venda = cursor.lastrowid
+            conn.commit()
+            cursor.close()
+            cursor = None
+            
+            if not id_venda:
+                raise Exception("Falha ao criar registro da venda manual.")
+
+            # 2. Inserir item
+            query_vp = "INSERT INTO venda_produto (id_venda, id_produto, qtd, valor) VALUES (%s, %s, %s, %s)"
+            execute_query(conn, query_vp, (id_venda, id_produto, qtd, total_item))
+
+            # 3. Diminuir estoque
             execute_query(conn, "UPDATE produto SET quantidade_estoque = quantidade_estoque - %s WHERE id = %s",
                           (qtd, id_produto))
 
-        print(f"[SUCESSO] Venda (ID: {id_venda}) realizada! Total: R$ {total_item:.2f}")
+            print(f"[SUCESSO] Venda (ID: {id_venda}) realizada manualmente! Total: R$ {total_item:.2f}")
 
-    except Exception as e:
-        print(f"[ERRO] Erro ao processar a venda: {e}")
+        except Exception as e_manual:
+             print(f"[ERRO] Falha completa ao processar a venda, mesmo manualmente: {e_manual}")
+             conn.rollback()
+
+
+    finally:
+        if cursor:
+            cursor.close()
 
 
 def consultar_vendas(conn):
@@ -415,173 +456,216 @@ def consultar_vendas(conn):
 
 # --- 6. Funções de Gerente (Busca, Edição, Apagar e Estatísticas) ---
 
-def editar_registro(conn):
-    """GERENTE: Edição de Registros (Clientes, Produtos, Vendedores)."""
-    if not check_permission(['Gerente', 'Administrador']):
-        return
-
-    print("\n--- Editar Registros (GERENTE) ---")
-    print("1. Editar Produto | 2. Editar Cliente | 3. Editar Vendedor")
-    escolha = input("Selecione a tabela (1/2/3): ").strip()
-
-    if escolha not in ['1', '2', '3']:
-        print("[ERRO] Opção inválida.")
-        return
-
-    tabela = ['produto', 'cliente', 'vendedor'][int(escolha) - 1]
-
-    try:
-        registro_id = int(input(f"Digite o ID do {tabela} a ser editado: "))
-    except ValueError:
-        print("[ERRO] ID inválido.")
-        return
-
-    # Obter colunas da tabela
+def listar_tabelas(conn):
+    """Retorna uma lista de todas as tabelas do banco de dados (Mais robusta)."""
     cursor = conn.cursor()
-    cursor.execute(f"DESCRIBE {tabela};")
-    colunas = [row[0] for row in cursor.fetchall()]
-    cursor.close()
-
-    print("\nCampos disponíveis para edição:")
-    print(", ".join(colunas))
-    campo = input("Digite o nome EXATO do campo a ser alterado: ").strip().lower()
-
-    if campo not in colunas:
-        print(f"[ERRO] O campo '{campo}' não existe na tabela '{tabela}'.")
-        return
-
-    novo_valor = input(f"Digite o novo valor para o campo '{campo}': ").strip()
-
-    # Conversão automática de tipo
     try:
-        if campo in ['valor', 'salario', 'cashback', 'nota_media']:
-            novo_valor = float(novo_valor)
-        elif campo in ['quantidade_estoque', 'idade', 'id_vendedor']:
-            novo_valor = int(novo_valor)
-    except ValueError:
-        print("[ERRO] Tipo de valor inválido.")
-        return
-
-    try:
-        cursor = conn.cursor()
-        query = f"UPDATE {tabela} SET {campo} = %s WHERE id = %s"
-        cursor.execute(query, (novo_valor, registro_id))
-        conn.commit()
-
-        if cursor.rowcount > 0:
-            print(f"[SUCESSO] {tabela.capitalize()} (ID {registro_id}) atualizado com sucesso!")
-        else:
-            print(f"[ERRO] Nenhum registro com ID {registro_id} encontrado.")
-
-        cursor.close()
+        cursor.execute("SHOW TABLES;")
+        tabelas = [t[0] for t in cursor.fetchall()]
     except Exception as e:
-        print(f"[ERRO] Falha ao editar registro: {e}")
-
-
-def consultar_registros(conn):
-    """GERENTE: Busca Produtos, Clientes ou Vendedores (por ID ou nome)."""
-    if not check_permission(['Gerente', 'Administrador']):
-        return
-
-    print("\n--- Buscar Registros (GERENTE) ---")
-    print("1. Buscar Produtos | 2. Buscar Clientes | 3. Buscar Vendedores")
-    escolha = input("Selecione a tabela (1/2/3): ").strip()
-
-    if escolha not in ['1', '2', '3']:
-        print("[ERRO] Opção inválida.")
-        return
-
-    tabela = ['produto', 'cliente', 'vendedor'][int(escolha) - 1]
-    termo = input(f"Digite o ID ou parte do nome do {tabela}: ").strip()
-
-    cursor = conn.cursor(dictionary=True)
-    try:
-        # Busca por ID se for número
-        if termo.isdigit():
-            query = f"SELECT * FROM {tabela} WHERE id = %s"
-            cursor.execute(query, (int(termo),))
-        else:
-            query = f"SELECT * FROM {tabela} WHERE nome LIKE %s LIMIT 10"
-            cursor.execute(query, (f'%{termo}%',))
-
-        resultados = cursor.fetchall()
-
-        if resultados:
-            print(f"\nResultados encontrados na tabela {tabela.upper()}:")
-
-            # Exibição formatada (tabela)
-            print(tabulate(resultados, headers="keys", tablefmt="grid", numalign="center", stralign="center"))
-        else:
-            print(f"[AVISO] Nenhum registro encontrado em {tabela}.")
-    except Exception as e:
-        print(f"[ERRO] Falha ao consultar registros: {e}")
+        print(f"[ERRO] Falha ao listar tabelas: {e}")
+        tabelas = []
     finally:
         cursor.close()
+    return tabelas
+    
+# --- FUNÇÃO MODIFICADA: Permite Gerente consultar todas as tabelas ---
+def consultar_registros(conn):
+    """GERENTE: Permite consultar e visualizar registros de todas as tabelas."""
+    if not check_permission(['Gerente', 'Administrador']): return
+    
+    print("\n--- Consultar Registros (GERENTE) ---")
+    
+    # Chama a função genérica de visualização, permitindo que o Gerente escolha
+    # qualquer tabela.
+    visualizar_tabela(conn)
+
+    input("\nPressione Enter para continuar...")
 
 
+def editar_registro(conn):
+    """Permite editar qualquer registro de qualquer tabela."""
+    if not check_permission(['Gerente', 'Administrador']): return 
+    
+    tabelas = listar_tabelas(conn)
+    if not tabelas:
+        print("[ERRO] Nenhuma tabela encontrada no banco de dados.")
+        return
 
+    print("\n--- Tabelas disponíveis para EDIÇÃO ---")
+    for i, t in enumerate(tabelas, 1):
+        print(f"{i}. {t}")
+
+    escolha = input("\nDigite o número da tabela que deseja editar (ou 0 para voltar): ").strip()
+    if escolha == '0':
+        return
+
+    if not escolha.isdigit() or int(escolha) < 1 or int(escolha) > len(tabelas):
+        print("[ERRO] Escolha inválida.")
+        return
+
+    tabela = tabelas[int(escolha) - 1]
+    cursor = None # Inicializa para o bloco finally
+    
+    # 1. Mostrar registros atuais da tabela
+    print("\n--- Registros Atuais ---")
+    visualizar_tabela(conn, tabela) 
+    
+    try:
+        cursor = conn.cursor()
+        # 2. Obter colunas
+        cursor.execute(f"DESCRIBE {tabela}")
+        colunas_info = cursor.fetchall()
+        colunas = [col[0] for col in colunas_info]
+        
+        if not colunas:
+            print(f"[ERRO] A tabela {tabela} não tem colunas.")
+            return
+
+        id_coluna = colunas[0] # Assume que a primeira coluna é o ID
+
+        id_editar = input(f"\nDigite o {id_coluna} do registro que deseja editar: ").strip()
+
+        # 3. Obter dados atuais do registro
+        cursor.execute(f"SELECT * FROM {tabela} WHERE {id_coluna} = %s", (id_editar,))
+        registro_raw = cursor.fetchone()
+        
+        if not registro_raw:
+            print("[ERRO] Registro não encontrado.")
+            return
+            
+        # Converter para dicionário para facilitar o acesso por nome da coluna
+        # É necessário garantir que o cursor não esteja em modo dictionary=True aqui,
+        # ou ajustar a lógica. Mantendo a lógica de conversão manual.
+        registro = dict(zip(colunas, registro_raw))
+
+
+        # 4. Editar campos
+        updates = []
+        novos_valores = []
+        
+        for i, col in enumerate(colunas):
+            if col == id_coluna:
+                continue
+            
+            valor_atual = registro[col]
+            
+            novo_valor = input(f"Novo valor para {col} (atual: {valor_atual}) [Enter = manter]: ").strip()
+            
+            if novo_valor != "":
+                updates.append(f"{col} = %s")
+                novos_valores.append(novo_valor)
+
+        if not updates:
+            print("Nenhuma alteração feita.")
+            return
+
+        # 5. Atualizar no banco
+        set_clause = ", ".join(updates)
+        sql = f"UPDATE {tabela} SET {set_clause} WHERE {id_coluna} = %s"
+        novos_valores.append(id_editar)
+
+        cursor.execute(sql, novos_valores)
+        conn.commit()
+        print("[OK] Registro atualizado com sucesso!")
+        
+    except mysql.connector.Error as err:
+        print(f"[ERRO SQL] {err}")
+    except Exception as e:
+        print(f"[ERRO GERAL] {e}")
+    finally:
+        if cursor: # Fechamento seguro
+            cursor.close()
+
+# --- FUNÇÃO MODIFICADA: Permite Gerente apagar registro por ID em qualquer tabela ---
 def apagar_registro(conn):
-    """GERENTE / ADMIN: Apagar Registros (Clientes, Produtos, Vendedores)."""
+    """GERENTE / ADMIN: Apagar Registros (Linha por ID) de qualquer tabela."""
     if not check_permission(['Gerente', 'Administrador']): 
         return
 
-    print("\n--- Apagar Registros (GERENTE/ADMIN) ---")
-    print("1. Apagar Produto | 2. Apagar Cliente | 3. Apagar Vendedor")
-    escolha = input("Selecione a tabela (1/2/3): ").strip()
-
-    tabelas = {
-        '1': ('produto', 'nome'),
-        '2': ('cliente', 'nome'),
-        '3': ('vendedor', 'nome')
-    }
-
-    if escolha not in tabelas:
-        print("[ERRO] Opção inválida.")
+    tabelas = listar_tabelas(conn)
+    if not tabelas:
+        print("[ERRO] Nenhuma tabela encontrada no banco de dados.")
         return
 
-    tabela, campo_nome = tabelas[escolha]
+    print("\n--- Tabelas disponíveis para APAGAR REGISTRO POR ID ---")
+    for i, t in enumerate(tabelas, 1):
+        print(f"{i}. {t}")
+
+    escolha = input("\nDigite o número da tabela que deseja gerenciar a exclusão (ou 0 para voltar): ").strip()
+    if escolha == '0':
+        return
+
+    if not escolha.isdigit() or int(escolha) < 1 or int(escolha) > len(tabelas):
+        print("[ERRO] Escolha inválida.")
+        return
+
+    tabela = tabelas[int(escolha) - 1]
+    
+    # 1. Mostrar registros atuais da tabela
+    visualizar_tabela(conn, tabela) 
+
+    # 2. Obter coluna ID
+    cursor = None # Inicializa para o bloco finally
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"DESCRIBE {tabela}")
+        colunas_info = cursor.fetchall()
+        colunas = [col[0] for col in colunas_info]
+        
+        if not colunas:
+            print(f"[ERRO] A tabela {tabela} não tem colunas.")
+            return
+
+        id_coluna = colunas[0] # Assume que a primeira coluna é o ID
+    except Exception as e:
+        print(f"[ERRO] Falha ao obter colunas da tabela {tabela}: {e}")
+        return
+    finally:
+        if cursor:
+            cursor.close()
+        cursor = None # Limpa para a próxima utilização
 
     try:
-        registro_id = int(input(f"Digite o ID do {tabela} a ser APAGADO: "))
+        registro_id = int(input(f"\nDigite o {id_coluna} do registro que deseja APAGAR: "))
     except ValueError:
         print("[ERRO] ID inválido.")
         return
 
-    # Buscar o nome do registro antes de excluir (para confirmar)
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute(f"SELECT {campo_nome} FROM {tabela} WHERE id = %s", (registro_id,))
-    registro = cursor.fetchone()
-
-    if not registro:
-        print(f"[ERRO] Nenhum {tabela} encontrado com ID {registro_id}.")
-        return
-
-    nome_registro = registro[campo_nome]
-    confirm = input(f"ATENÇÃO: Confirma a exclusão de {tabela.upper()} '{nome_registro}' (ID {registro_id})? (s/n): ").lower()
+    confirm = input(f"ATENÇÃO: Confirma a exclusão do registro ID {registro_id} da tabela {tabela.upper()}? (s/n): ").lower()
     if confirm != 's':
         print("Exclusão cancelada.")
         return
 
     try:
-        cursor.execute(f"DELETE FROM {tabela} WHERE id = %s", (registro_id,))
+        cursor = conn.cursor()
+        # Apenas DELETE WHERE ID, sem TRUNCATE
+        cursor.execute(f"DELETE FROM {tabela} WHERE {id_coluna} = %s", (registro_id,))
         conn.commit()
-        print(f"[SUCESSO] {tabela.capitalize()} '{nome_registro}' (ID {registro_id}) APAGADO com sucesso!")
+        
+        if cursor.rowcount > 0:
+            print(f"[SUCESSO] Registro (ID {registro_id}) da tabela '{tabela}' APAGADO com sucesso!")
+        else:
+            print(f"[AVISO] Nenhum registro encontrado com ID {registro_id}.")
+
 
     except mysql.connector.IntegrityError as err:
         if err.errno == 1451:  # Violação de chave estrangeira
-            print(f"[ERRO] Não foi possível apagar: o {tabela} '{nome_registro}' está vinculado a outros registros (ex: vendas).")
+            print(f"[ERRO] Não foi possível apagar: O registro está vinculado a outros dados no DB.")
         else:
             print(f"[ERRO] Falha ao apagar: {err}")
     except mysql.connector.Error as err:
         print(f"[ERRO] Erro no banco de dados: {err}")
     finally:
-        cursor.close()
-        
+        if cursor:
+            cursor.close()
+
 def executar_reajuste(conn):
     """ADMIN: Executa Stored Procedure Reajuste."""
     if not check_permission(['Administrador']): return
     
     print("\n--- Executar Reajuste Salarial ---")
+    cursor = None # Inicialização segura
     try:
         percentual = float(input("Digite o percentual de reajuste (ex: 5.5): "))
         categoria = input("Digite a categoria (vendedor, gerente, CEO): ").lower()
@@ -590,33 +674,59 @@ def executar_reajuste(conn):
             print("[ERRO] Categoria inválida.")
             return
 
-        query = "CALL Reajuste(%s, %s)"
-        resultados = execute_query(conn, query, (percentual, categoria), fetch=True)
+        # Chamada à Stored Procedure
+        cursor = conn.cursor(dictionary=True)
+        cursor.callproc("Reajuste", (percentual, categoria))
+        conn.commit()
         
-        if resultados:
-            print(f"[SUCESSO] {resultados[0]['resultado']}")
-        else:
-            print("[ERRO] Falha ao executar Reajuste. Verifique os parâmetros e se o SP existe.")
+        print(f"[SUCESSO] Reajuste de {percentual}% solicitado para a categoria {categoria.upper()}.")
             
     except ValueError:
         print("[ERRO] Percentual inválido.")
+    except Exception as e:
+        print(f"[ERRO] Falha ao executar Reajuste: {e}")
+    finally:
+        if cursor: # Fechamento seguro
+            cursor.close()
 
 def executar_sorteio(conn):
-    """ADMIN: Executa Stored Procedure Sorteio."""
+    """ADMIN: Executa Stored Procedure Sorteio. CORRIGIDO para múltiplos resultados de SP."""
     if not check_permission(['Administrador']): 
         return
 
     print("\n--- Executar Sorteio de Cliente (SP Sorteio) ---")
-    query = "CALL Sorteio()"
-    resultados = execute_query(conn, query, fetch=True)
+    cursor = None # Inicialização segura
+    try:
+        # Usa cursor.callproc para lidar melhor com Stored Procedures que retornam múltiplos conjuntos
+        cursor = conn.cursor(dictionary=True)
+        cursor.callproc("Sorteio")
 
-    if resultados:
-        sorteado = resultados[0]
-        print("\nO cliente sorteado é:")
-        print(f"  ID: {sorteado['cliente_sorteado']}")
-        print(f"  Valor do Voucher: R$ {sorteado['valor_voucher']:.2f}")
-    else:
-        print("[ERRO] Falha ao executar Sorteio. Verifique se o SP existe.")
+        sorteado = None
+        # Itera sobre todos os conjuntos de resultados que o SP possa retornar
+        for result_set in cursor.stored_results():
+            dados = result_set.fetchall()
+            if dados and 'cliente_sorteado' in dados[0]: # Procura pelo SELECT final com a coluna esperada
+                sorteado = dados[0]
+                break 
+            
+            # Se o SP retornar a mensagem "Sem clientes para sortear", captura a mensagem
+            if dados and 'mensagem' in dados[0]:
+                print(f"[INFO] {dados[0]['mensagem']}")
+                return
+
+        if sorteado:
+            conn.commit() # Confirma o INSERT do voucher
+            print("\nO cliente sorteado é:")
+            print(f"  ID: {sorteado['cliente_sorteado']}")
+            print(f"  Valor do Voucher: R$ {sorteado['valor_voucher']:.2f}")
+        else:
+            print("[INFO] Nenhum resultado de sorteio válido retornado. Verifique se há clientes cadastrados.")
+
+    except Exception as e:
+        print(f"[ERRO] Falha ao executar Sorteio: {e}")
+    finally:
+        if cursor: # Fechamento seguro
+            cursor.close()
 
 
 def executar_estatisticas(conn):
@@ -625,6 +735,7 @@ def executar_estatisticas(conn):
         return
 
     print("\n--- Executar Estatísticas de Vendas (SP Estatísticas) ---")
+    cursor = None # Inicialização segura
 
     try:
         cursor = conn.cursor(dictionary=True)
@@ -663,10 +774,303 @@ def executar_estatisticas(conn):
         print(f"[ERRO] Falha ao executar Estatísticas: {e}")
         print("Detalhes: O usuário pode não ter permissão ou o SP pode estar ausente.")
     finally:
+        if cursor: # Fechamento seguro
+            cursor.close()
+
+
+# --- 7. Funções Auxiliares (CRUD Genérico e Procedures) e Menus de Navegação ---
+
+
+def cadastrar_generico(conn):
+    """Permite inserir dados em qualquer tabela do banco."""
+    if not check_permission(['Administrador']): return
+    
+    cursor = conn.cursor()
+    cursor.execute("SHOW TABLES")
+    tabelas = [t[0] for t in cursor.fetchall()]
+
+    print("\n--- Tabelas disponíveis ---")
+    for i, t in enumerate(tabelas, 1):
+        print(f"{i}. {t}")
+
+    escolha = input("\nEscolha a tabela (ou 0 para voltar): ").strip()
+
+    if escolha == "0":
+        cursor.close()
+        return
+    if not escolha.isdigit() or int(escolha) < 1 or int(escolha) > len(tabelas):
+        print("[ERRO] Escolha inválida.")
+        cursor.close()
+        return
+
+    tabela = tabelas[int(escolha) - 1]
+
+    # Obter estrutura da tabela
+    cursor.execute(f"DESCRIBE {tabela}")
+    colunas = cursor.fetchall()
+
+    valores = []
+    colunas_a_inserir = []
+    
+    for col in colunas:
+        nome = col[0]
+        tipo = col[1]
+        extra = col[5] # Coluna 'Extra' contém 'auto_increment'
+
+        # Ignora campos que são auto_increment ou explicitamente 'id'
+        if "auto_increment" in extra or nome.lower() == "id":
+            continue
+            
+        valor = input(f"Digite o valor para {nome} ({tipo}): ")
+        valores.append(valor)
+        colunas_a_inserir.append(nome) # Adiciona o nome da coluna para a query
+        
+    if not valores:
+        print("[INFO] Nenhuma coluna para inserir encontrada (apenas IDs auto-incremento?).")
+        cursor.close()
+        return
+
+    placeholders = ', '.join(['%s'] * len(valores))
+    colunas_sql = ', '.join(colunas_a_inserir)
+    sql = f"INSERT INTO {tabela} ({colunas_sql}) VALUES ({placeholders})"
+
+    try:
+        cursor.execute(sql, valores)
+        conn.commit()
+        print("[OK] Registro inserido com sucesso!")
+    except mysql.connector.Error as err:
+        print(f"[ERRO SQL] {err}")
+    finally:
         cursor.close()
 
 
-# --- 7. Menus de Navegação ---
+def deletar_generico(conn):
+    """Permite deletar todos os registros de uma tabela (TRUNCATE) ou uma linha específica (DELETE WHERE ID)."""
+    if not check_permission(['Administrador']): return
+    
+    tabelas = listar_tabelas(conn)
+    if not tabelas:
+        print("[ERRO] Nenhuma tabela encontrada.")
+        return
+
+    print("\n--- SELEÇÃO DE TABELA PARA EXCLUSÃO ---")
+    for i, t in enumerate(tabelas, 1):
+        print(f"{i}. {t}")
+    escolha = input("\nEscolha a tabela que deseja gerenciar a exclusão (ou 0 para voltar): ").strip()
+
+    if escolha == '0':
+        return
+    if not escolha.isdigit() or int(escolha) < 1 or int(escolha) > len(tabelas):
+        print("[ERRO] Escolha inválida.")
+        return
+    tabela = tabelas[int(escolha) - 1]
+
+    # Novo menu de exclusão
+    while True:
+        clear_screen()
+        print(f"--- OPÇÕES DE EXCLUSÃO PARA A TABELA '{tabela.upper()}' (ADMIN) ---")
+        print("1. DELETAR TODOS OS REGISTROS (Limpar a Tabela Inteira - TRUNCATE TABLE) ⚠️")
+        print("2. Deletar um registro específico (DELETE WHERE ID)")
+        print("0. Voltar")
+        
+        op_del = input("\nEscolha a operação de exclusão: ").strip()
+
+        if op_del == '1':
+            # --- Opção 1: TRUNCATE TABLE (Apenas ADMIN) ---
+            print(f"\n[ATENÇÃO] Você está prestes a DELETAR TODOS OS DADOS da tabela '{tabela.upper()}'!")
+            print("Atenção: Esta ação limpa todos os registros e reseta o contador de ID (auto-incremento).")
+            confirm = input("Confirme a exclusão total e permanente (s/n): ").lower()
+            if confirm != 's':
+                print("Operação cancelada.")
+                time.sleep(1)
+                break 
+            
+            cursor = None
+            try:
+                cursor = conn.cursor()
+                # Desativa temporariamente a checagem de FK para TRUNCATE (boa prática)
+                cursor.execute(f"SET FOREIGN_KEY_CHECKS = 0;")
+                cursor.execute(f"TRUNCATE TABLE {tabela};")
+                cursor.execute(f"SET FOREIGN_KEY_CHECKS = 1;")
+                conn.commit()
+                print(f"[OK] Todos os registros da tabela '{tabela.upper()}' foram deletados e o auto-incremento resetado.")
+            except mysql.connector.Error as err:
+                print(f"[ERRO SQL] {err}")
+            finally:
+                if cursor:
+                    cursor.close()
+            input("Pressione Enter para continuar...")
+            break 
+            
+        elif op_del == '2':
+            # --- Opção 2: DELETE WHERE ID (Deletar Linha) ---
+            
+            # Lista os registros da tabela para o usuário escolher o ID
+            visualizar_tabela(conn, tabela) 
+            
+            id_registro = input("\nDigite o ID do registro que deseja deletar: ").strip()
+
+            confirm = input(f"Tem certeza que deseja deletar o registro {id_registro} da tabela {tabela}? (s/n): ").lower()
+            if confirm != 's':
+                print("Operação cancelada.")
+                time.sleep(1)
+                break
+
+            cursor = None
+            try:
+                cursor = conn.cursor()
+                cursor.execute(f"DELETE FROM {tabela} WHERE id = %s", (id_registro,))
+                conn.commit()
+                print("[OK] Registro deletado com sucesso!")
+            except mysql.connector.Error as err:
+                print(f"[ERRO SQL] {err}")
+            finally:
+                if cursor:
+                    cursor.close()
+            input("Pressione Enter para continuar...")
+            break 
+            
+        elif op_del == '0':
+            break
+        else:
+            print("[ERRO] Opção inválida. Tente novamente.")
+            time.sleep(1)
+
+def calcular_idade(conn):
+    """Executa a function Calcula_Idade(cliente_id)."""
+    if not check_permission(['Administrador']): return
+    cursor = None # Inicialização segura (CORREÇÃO DE ATRIBUTO)
+    try:
+        cliente_id = int(input("Digite o ID do cliente: "))
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT Calcula_Idade(%s);", (cliente_id,))
+        idade = cursor.fetchone()[0]
+        print(f"A idade do cliente (ID={cliente_id}) é {idade} anos.")
+    except mysql.connector.Error as err:
+        print(f"[ERRO SQL] {err}")
+    except ValueError:
+        print("[ERRO] ID do cliente inválido.")
+    finally:
+        # Fechamento seguro (CORREÇÃO DE ATRIBUTO)
+        if cursor: 
+            cursor.close()
+
+def somar_frete(conn):
+    """Executa a function Soma_Frete(venda_id)."""
+    if not check_permission(['Administrador']): return
+    cursor = None # Inicialização segura (CORREÇÃO DE ATRIBUTO)
+    try:
+        venda_id = int(input("Digite o ID da venda: "))
+        cursor = conn.cursor()
+        # Nota: A função Soma_Frete pode não existir no SQL provido
+        cursor.execute(f"SELECT Soma_Frete(%s);", (venda_id,))
+        frete = cursor.fetchone()[0]
+        print(f"O frete total da venda (ID={venda_id}) é R$ {frete:.2f}.")
+    except mysql.connector.Error as err:
+        print(f"[ERRO SQL] {err}")
+    except ValueError:
+        print("[ERRO] ID da venda inválido.")
+    finally:
+        if cursor: # Fechamento seguro (CORREÇÃO DE ATRIBUTO)
+            cursor.close()
+
+def calcular_arrecadado(conn):
+    """Executa a function Arrecadado(data, id_vendedor) que calcula total de vendas."""
+    if not check_permission(['Administrador']): return
+    cursor = None # Inicialização segura (CORREÇÃO DE ATRIBUTO)
+    try:
+        # A função Arrecadado no SQL espera 2 argumentos (data, id_vendedor).
+        print("Para usar Arrecadado(data, id_vendedor) é necessário fornecer os parâmetros.")
+        data_param = input("Digite a data (AAAA-MM-DD): ")
+        id_vendedor_param = int(input("Digite o ID do Vendedor: "))
+
+        cursor = conn.cursor()
+        # CORREÇÃO: Chamando como FUNCTION (SELECT) e não como PROCEDURE (CALL)
+        cursor.execute(f"SELECT Arrecadado(%s, %s);", (data_param, id_vendedor_param))
+        total_arrecadado = cursor.fetchone()[0]
+
+        if total_arrecadado is not None:
+             print(f"Valor total arrecadado na data {data_param} pelo vendedor {id_vendedor_param}: R$ {total_arrecadado:.2f}")
+        else:
+             print("[INFO] Nenhum valor arrecadado retornado.")
+             
+    except mysql.connector.Error as err:
+        print(f"[ERRO SQL] {err}")
+    except ValueError:
+        print("[ERRO] Entrada de parâmetros inválida.")
+    finally:
+        if cursor: # Fechamento seguro (CORREÇÃO DE ATRIBUTO)
+            cursor.close()
+
+
+def visualizar_tabela(conn, tabela_selecionada=None):
+    """Permite ao ADMIN/GERENTE visualizar qualquer tabela do banco, ou uma específica."""
+    if not conn or not conn.is_connected():
+        print("[ERRO] Conexão com o banco está inativa.")
+        return []
+
+    if not check_permission(['Administrador', 'Gerente', 'Funcionario']): return
+    
+    cursor = conn.cursor()
+
+    # Obter todas as tabelas do banco de dados atual
+    cursor.execute("SHOW TABLES;")
+    tabelas = [t[0] for t in cursor.fetchall()]
+
+    if not tabelas:
+        print("[AVISO] Nenhuma tabela encontrada no banco de dados.")
+        cursor.close()
+        return []
+    
+    # Se a tabela não foi selecionada (chamada do menu Admin/Gerente), o usuário escolhe
+    if not tabela_selecionada:
+        print("\n--- Tabelas disponíveis para Consulta ---")
+        for i, tabela in enumerate(tabelas, start=1):
+            print(f"{i}. {tabela}")
+
+        escolha = input("\nDigite o número da tabela que deseja visualizar (ou 0 para voltar): ").strip()
+        if escolha == '0':
+            cursor.close()
+            return tabelas 
+
+        try:
+            idx = int(escolha) - 1
+            if idx < 0 or idx >= len(tabelas):
+                print("[ERRO] Escolha inválida.")
+                cursor.close()
+                return tabelas
+            tabela_selecionada = tabelas[idx]
+        except ValueError:
+            print("[ERRO] Escolha inválida.")
+            cursor.close()
+            return tabelas
+
+    # Buscar dados da tabela
+    try:
+        cursor.execute(f"SELECT * FROM {tabela_selecionada};")
+        registros = cursor.fetchall()
+        colunas = [desc[0] for desc in cursor.description]
+
+        print(f"\n--- Conteúdo da tabela '{tabela_selecionada}' ---")
+        if not registros:
+            print("[VAZIO] Nenhum registro encontrado.")
+        else:
+            # Usando tabulate para uma saída mais formatada
+            data_list = []
+            for linha in registros:
+                data_list.append([str(c) if c is not None else 'NULL' for c in linha])
+                
+            print(tabulate(data_list, headers=colunas, tablefmt="grid"))
+            
+    except Exception as e:
+        print(f"[ERRO] Não foi possível exibir a tabela: {e}")
+
+    cursor.close()
+    return tabelas 
+    
+# -------------------------------------------------------------
+# Os menus abaixo usam as funções corrigidas acima e na Seção 6.
+# -------------------------------------------------------------
 
 def menu_admin(conn):
     """Menu para o Administrador (todas as permissões do sistema)."""
@@ -676,12 +1080,8 @@ def menu_admin(conn):
         print("1. Criar / Preencher Dados Nativos (Reinicializar banco)")
         print("2. Gerenciar Registros (CRUD Completo)")  
         print("3. Executar Procedures e Funções de Gestão")
-        print("4. Executar Sorteio de Cliente")
-        print("--- ACESSAR OUTROS MENUS ---")
-        print("5. Abrir Menu do Gerente")
-        print("6. Abrir Menu do Funcionário")
         print("--- CONSULTAS LIVRES ---")
-        print("7. Visualizar qualquer tabela do banco")
+        print("4. Visualizar qualquer tabela do banco")
         print("0. Sair e Fazer Logout")
 
         choice = input("\nEscolha uma opção: ").strip()
@@ -691,81 +1091,81 @@ def menu_admin(conn):
         # ---------------------------
         if choice == '1':
             criar_e_destruir_db()
-            input("Pressione Enter para continuar...")
+            # input("Pressione Enter para continuar...") # Removido pois já está em criar_e_destruir_db
 
         # ---------------------------
         # 2) CRUD COMPLETO
         # ---------------------------
         elif choice == '2':
-            clear_screen()
-            print("--- GERENCIAR REGISTROS (CRUD) ---")
-            print("1. Adicionar Registro")
-            print("2. Editar Registro")
-            print("3. Deletar Registro")
-            print("4. Voltar")
-            sub_choice = input("Opção: ").strip()
+            while True:
+                clear_screen()
+                print("--- GERENCIAR REGISTROS (CRUD) ---")
+                print("1. Adicionar Registro (Genérico)")
+                print("2. Editar Registro (Genérico)")
+                print("3. Deletar Registro (TRUNCATE ou DELETE WHERE ID)")
+                print("4. Voltar")
+                sub_choice = input("Opção: ").strip()
 
-            if sub_choice == '1':
-                cadastrar_generico(conn)  # Permite inserir em qualquer tabela
-            elif sub_choice == '2':
-                editar_registro(conn)  # Permite editar qualquer registro
-            elif sub_choice == '3':
-                deletar_generico(conn)  # Permite deletar qualquer registro
-            input("Pressione Enter para continuar...")
+                if sub_choice == '1':
+                    cadastrar_generico(conn)  
+                elif sub_choice == '2':
+                    editar_registro(conn)  
+                elif sub_choice == '3':
+                    deletar_generico(conn)  
+                elif sub_choice == '4':
+                    break
+                else:
+                    print("[ERRO] Opção inválida."); time.sleep(1)
+                
+                input("Pressione Enter para continuar...")
+                if sub_choice not in ['1', '2', '3']: break # Sai do sub-menu se não for CRUD
+
 
         # ---------------------------
         # 3) PROCEDURES E FUNÇÕES
         # ---------------------------
         elif choice == '3':
-            clear_screen()
-            print("--- PROCEDURES E FUNÇÕES DE GESTÃO ---")
-            print("1. Reajuste Salarial (Procedure Reajuste)")
-            print("2. Calcular Idade de um Cliente (Function Calcula_Idade)")
-            print("3. Somar Frete (Function Soma_Frete)")
-            print("4. Calcular Valor Arrecadado Total (Procedure Arrecadado)")
-            print("5. Estatísticas Gerais (Procedure Estatisticas)")
-            print("6. Registrar Venda (Procedure Venda)")
-            print("0. Voltar")
-            sub_choice = input("Escolha uma opção: ").strip()
+            while True:
+                clear_screen()
+                print("--- PROCEDURES E FUNÇÕES DE GESTÃO ---")
+                print("1. Reajuste Salarial (Procedure Reajuste)")
+                print("2. Calcular Idade de um Cliente (Function Calcula_Idade)")
+                print("3. Somar Frete (Function Soma_Frete)")
+                print("4. Executar Sorteio de Cliente (SP Sorteio)")
+                print("5. Calcular Valor Arrecadado Total (Function Arrecadado)")
+                print("6. Estatísticas Gerais (Procedure Estatisticas)")
+                print("7. Registrar Venda (Procedure Venda)")
+                print("0. Voltar")
+                sub_choice = input("Escolha uma opção: ").strip()
 
-            if sub_choice == '1':
-                executar_reajuste(conn)
-            elif sub_choice == '2':
-                calcular_idade(conn)
-            elif sub_choice == '3':
-                somar_frete(conn)
-            elif sub_choice == '4':
-                calcular_arrecadado(conn)
-            elif sub_choice == '5':
-                executar_estatisticas(conn)
-            elif sub_choice == '6':
-                realizar_venda(conn)
-            input("Pressione Enter para continuar...")
+                if sub_choice == '1':
+                    executar_reajuste(conn)
+                elif sub_choice == '2':
+                    calcular_idade(conn) 
+                elif sub_choice == '3':
+                    somar_frete(conn) 
+                elif sub_choice == '4':
+                    executar_sorteio(conn)
+                elif sub_choice == '5':
+                    calcular_arrecadado(conn) 
+                elif sub_choice == '6':
+                    executar_estatisticas(conn)
+                elif sub_choice == '7':
+                    realizar_venda(conn)
+                elif sub_choice == '0':
+                    break
+                else:
+                    print("[ERRO] Opção inválida."); time.sleep(1)
+                
+                input("Pressione Enter para continuar...")
+                if sub_choice == '0': break
+
 
         # ---------------------------
-        # 4) SORTEIO CLIENTE
+        # 4) CONSULTAS LIVRES 
         # ---------------------------
         elif choice == '4':
-            executar_sorteio(conn)
-            input("Pressione Enter para continuar...")
-
-        # ---------------------------
-        # 5) MENU GERENTE
-        # ---------------------------
-        elif choice == '5':
-            menu_gerente(conn)
-
-        # ---------------------------
-        # 6) MENU FUNCIONÁRIO
-        # ---------------------------
-        elif choice == '6':
-            menu_funcionario(conn)
-
-        # ---------------------------
-        # 7) CONSULTAS LIVRES
-        # ---------------------------
-        elif choice == '7':
-            visualizar_tabela(conn)
+            visualizar_tabela(conn) # Chama a função genérica sem parâmetro
             input("Pressione Enter para continuar...")
 
         # ---------------------------
@@ -778,231 +1178,18 @@ def menu_admin(conn):
             print("[ERRO] Opção inválida.")
             time.sleep(1)
 
-def cadastrar_generico(conn):
-    """Permite inserir dados em qualquer tabela do banco."""
-    tabelas = visualizar_tabela(conn)
-    print("\nTabelas disponíveis:")
-    for i, t in enumerate(tabelas, 1):
-        print(f"{i}. {t}")
-    escolha = input("Escolha a tabela: ").strip()
-
-    if not escolha.isdigit() or int(escolha) < 1 or int(escolha) > len(tabelas):
-        print("[ERRO] Escolha inválida.")
-        return
-    tabela = tabelas[int(escolha) - 1]
-
-    cursor = conn.cursor()
-    cursor.execute(f"DESCRIBE {tabela}")
-    colunas = cursor.fetchall()
-
-    valores = []
-    for col in colunas:
-        nome = col[0]
-        tipo = col[1]
-        if "auto_increment" in col[5] or nome.lower() == "id":
-            continue
-        valor = input(f"Digite o valor para {nome} ({tipo}): ")
-        valores.append(valor)
-
-    placeholders = ', '.join(['%s'] * len(valores))
-    colunas_sql = ', '.join([c[0] for c in colunas if not ("auto_increment" in c[5] or c[0].lower() == "id")])
-    sql = f"INSERT INTO {tabela} ({colunas_sql}) VALUES ({placeholders})"
-
-    try:
-        cursor.execute(sql, valores)
-        conn.commit()
-        print("[OK] Registro inserido com sucesso!")
-    except mysql.connector.Error as err:
-        print(f"[ERRO SQL] {err}")
-    finally:
-        cursor.close()
-
-def editar_registro(conn):
-    """Permite editar qualquer registro de qualquer tabela."""
-    tabelas = visualizar_tabela(conn)
-    print("\nTabelas disponíveis:")
-    for i, t in enumerate(tabelas, 1):
-        print(f"{i}. {t}")
-    escolha = input("Escolha a tabela: ").strip()
-
-    if not escolha.isdigit() or int(escolha) < 1 or int(escolha) > len(tabelas):
-        print("[ERRO] Escolha inválida.")
-        return
-    tabela = tabelas[int(escolha) - 1]
-
-    id_registro = input("Digite o ID do registro que deseja editar: ").strip()
-
-    cursor = conn.cursor()
-    cursor.execute(f"DESCRIBE {tabela}")
-    colunas = cursor.fetchall()
-
-    updates = []
-    valores = []
-
-    for col in colunas:
-        nome = col[0]
-        if nome.lower() == "id":
-            continue
-        novo_valor = input(f"Novo valor para {nome} (deixe vazio para não alterar): ").strip()
-        if novo_valor != "":
-            updates.append(f"{nome} = %s")
-            valores.append(novo_valor)
-
-    if not updates:
-        print("Nenhuma alteração feita.")
-        return
-
-    sql = f"UPDATE {tabela} SET {', '.join(updates)} WHERE id = %s"
-    valores.append(id_registro)
-
-    try:
-        cursor.execute(sql, valores)
-        conn.commit()
-        print("[OK] Registro atualizado com sucesso!")
-    except mysql.connector.Error as err:
-        print(f"[ERRO SQL] {err}")
-    finally:
-        cursor.close()
-
-def deletar_generico(conn):
-    """Permite deletar registros de qualquer tabela."""
-    tabelas = visualizar_tabela(conn)
-    print("\nTabelas disponíveis:")
-    for i, t in enumerate(tabelas, 1):
-        print(f"{i}. {t}")
-    escolha = input("Escolha a tabela: ").strip()
-
-    if not escolha.isdigit() or int(escolha) < 1 or int(escolha) > len(tabelas):
-        print("[ERRO] Escolha inválida.")
-        return
-    tabela = tabelas[int(escolha) - 1]
-
-    visualizar_tabela(conn, tabela)
-    id_registro = input("Digite o ID do registro que deseja deletar: ").strip()
-
-    confirm = input(f"Tem certeza que deseja deletar o registro {id_registro} da tabela {tabela}? (s/n): ").lower()
-    if confirm != 's':
-        print("Operação cancelada.")
-        return
-
-    cursor = conn.cursor()
-    try:
-        cursor.execute(f"DELETE FROM {tabela} WHERE id = %s", (id_registro,))
-        conn.commit()
-        print("[OK] Registro deletado com sucesso!")
-    except mysql.connector.Error as err:
-        print(f"[ERRO SQL] {err}")
-    finally:
-        cursor.close()
-
-def calcular_idade(conn):
-    """Executa a function Calcula_Idade(cliente_id)."""
-    try:
-        cliente_id = int(input("Digite o ID do cliente: "))
-        cursor = conn.cursor()
-        cursor.execute(f"SELECT Calcula_Idade({cliente_id});")
-        idade = cursor.fetchone()[0]
-        print(f"A idade do cliente (ID={cliente_id}) é {idade} anos.")
-    except mysql.connector.Error as err:
-        print(f"[ERRO SQL] {err}")
-    finally:
-        cursor.close()
-
-def somar_frete(conn):
-    """Executa a function Soma_Frete(venda_id)."""
-    try:
-        venda_id = int(input("Digite o ID da venda: "))
-        cursor = conn.cursor()
-        cursor.execute(f"SELECT Soma_Frete({venda_id});")
-        frete = cursor.fetchone()[0]
-        print(f"O frete total da venda (ID={venda_id}) é R$ {frete:.2f}.")
-    except mysql.connector.Error as err:
-        print(f"[ERRO SQL] {err}")
-    finally:
-        cursor.close()
-
-def calcular_arrecadado(conn):
-    """Executa a procedure Arrecadado() que calcula total de vendas."""
-    try:
-        cursor = conn.cursor()
-        cursor.callproc("Arrecadado")
-        for result in cursor.stored_results():
-            rows = result.fetchall()
-            for row in rows:
-                print(f"Valor total arrecadado: R$ {row[0]:.2f}")
-    except mysql.connector.Error as err:
-        print(f"[ERRO SQL] {err}")
-    finally:
-        cursor.close()
-
-
-def visualizar_tabela(conn):
-    """Permite ao ADMIN visualizar qualquer tabela do banco."""
-    if not conn or not conn.is_connected():
-        print("[ERRO] Conexão com o banco está inativa.")
-        return
-
-    cursor = conn.cursor()
-
-    # Obter todas as tabelas do banco de dados atual
-    cursor.execute("SHOW TABLES;")
-    tabelas = [t[0] for t in cursor.fetchall()]
-
-    if not tabelas:
-        print("[AVISO] Nenhuma tabela encontrada no banco de dados.")
-        cursor.close()
-        return
-
-    print("\n--- Tabelas disponíveis ---")
-    for i, tabela in enumerate(tabelas, start=1):
-        print(f"{i}. {tabela}")
-
-    escolha = input("\nDigite o número da tabela que deseja visualizar (ou 0 para voltar): ").strip()
-    if escolha == '0':
-        cursor.close()
-        return
-
-    try:
-        idx = int(escolha) - 1
-        if idx < 0 or idx >= len(tabelas):
-            print("[ERRO] Escolha inválida.")
-            cursor.close()
-            return
-        tabela_selecionada = tabelas[idx]
-
-        # Buscar dados da tabela
-        cursor.execute(f"SELECT * FROM {tabela_selecionada};")
-        registros = cursor.fetchall()
-        colunas = [desc[0] for desc in cursor.description]
-
-        print(f"\n--- Conteúdo da tabela '{tabela_selecionada}' ---")
-        if not registros:
-            print("[VAZIO] Nenhum registro encontrado.")
-        else:
-            # Exibir cabeçalho
-            print(" | ".join(colunas))
-            print("-" * 80)
-            for linha in registros:
-                print(" | ".join(str(c) for c in linha))
-    except Exception as e:
-        print(f"[ERRO] Não foi possível exibir a tabela: {e}")
-
-    cursor.close()
-
-
+# --- FUNÇÃO MODIFICADA: Gerente agora tem CRUD (sem TRUNCATE) em todas as tabelas ---
 def menu_gerente(conn):
-    """Menu para o Gerente (Busca, Edição, Apagar, Estatísticas)."""
+    """Menu para o Gerente (Busca, Edição, Apagar por ID, Estatísticas)."""
     if not check_permission(['Gerente', 'Administrador']): return
     while True:
         clear_screen()
         print(f"--- MENU GERENTE (Usuário: {CURRENT_USER}) ---")
-        print("--- CRUD ---")
-        # ampliar as tabelas que o gerente tem acesso
-        print("1. Buscar Registros (Clientes/Produtos/Vendedores)")
-        print("2. Editar Registro (Cliente/Produto/Vendedor)")
-        print("3. Apagar Registro (Cliente/Produto/Vendedor)")
-        print("--- CONSULTA ---")
-        # colocar as outras execuções aqui
+        print("--- CRUD (Todas as Tabelas) ---")
+        print("1. Consultar Registros")
+        print("2. Editar Registro (por ID)")
+        print("3. Apagar Registro (por ID)")
+        print("--- CONSULTA AVANÇADA ---")
         print("4. Executar Estatísticas de Vendas")
         print("0. Voltar ao Menu Principal / Sair")
         
