@@ -24,11 +24,11 @@ def get_db_connection(use_db=True):
         'host': 'localhost',
         'user': CURRENT_USER,
         'password': CURRENT_PASSWORD,
-        'unix_socket': '/opt/lampp/var/mysql/mysql.sock'  # <- ESSA LINHA É O SEGREDO!
+        'unix_socket': '/opt/lampp/var/mysql/mysql.sock'
     }
     
     if use_db:
-        config['database'] = DB_DATABASE  # ex: ecommerce
+        config['database'] = DB_DATABASE
     
     try:
         conn = mysql.connector.connect(**config)
@@ -42,26 +42,26 @@ def get_db_connection(use_db=True):
 def execute_query(conn, query, params=None, fetch=False):
     """Executa consultas SQL e trata exceções."""
     try:
-        # Usa dictionary=True para retornar resultados como dicionários (mais fácil de usar)
+
         cursor = conn.cursor(dictionary=True)
         cursor.execute(query, params)
 
         results = []
-        # Tenta buscar resultados (inclusive se for procedure)
+
         try:
             if fetch:
                 while True:
                     part = cursor.fetchall()
                     if part:
                         results.extend(part)
-                    # Tenta avançar se o método existir
+
                     if hasattr(cursor, "next_result"):
                         if not cursor.next_result():
                             break
                     else:
                         break
         except mysql.connector.InterfaceError:
-            pass  # Nenhum outro conjunto de resultados
+            pass
         except mysql.connector.ProgrammingError:
             pass
 
@@ -70,7 +70,6 @@ def execute_query(conn, query, params=None, fetch=False):
         return results if fetch else True
 
     except mysql.connector.Error as err:
-        print(f"[ERRO] Erro de SQL: {err}")
         try:
             if conn.is_connected():
                 conn.rollback()
@@ -83,7 +82,7 @@ def clear_screen():
     """Limpa o console."""
     os.system('cls' if os.name == 'nt' else 'clear')
 
-# --- 2. Lógica de Permissões e Roles ---
+
 
 def get_user_role():
     """Determina o papel do usuário com base no CURRENT_USER."""
@@ -104,7 +103,6 @@ def check_permission(required_roles):
     print(f"\n[ERRO] ACESSO NEGADO. Seu papel ({current_role}) não tem permissão para esta ação.")
     return False
 
-# --- 3. Dados Nativos e Setup ---
 
 def preencher_dados_nativos(conn):
     """Insere dados de teste nas tabelas."""
@@ -114,9 +112,8 @@ def preencher_dados_nativos(conn):
         print("Não foi possível preencher dados: Conexão inválida.")
         return
 
-    # ========================
     # INSERIR FUNCIONÁRIOS
-    # ========================
+
     funcionarios_data = []
     tipos_func = ["Vendedor", "Gerente", "CEO"]
     causas = ["Causa Ambiental", "Causa Social", "Causa Educacional", "Causa Animal", "Causa Tecnológica"]
@@ -125,8 +122,8 @@ def preencher_dados_nativos(conn):
         nome = f"Funcionario {i}"
         tipo = random.choice(tipos_func)
         salario = {
-            "Vendedor": round(random.uniform(1800, 3000), 2),
-            "Gerente": round(random.uniform(4000, 7000), 2),
+            "vendedor": round(random.uniform(1800, 3000), 2),
+            "gerente": round(random.uniform(4000, 7000), 2),
             "CEO": round(random.uniform(12000, 20000), 2)
         }[tipo]
         causa_social = random.choice(causas)
@@ -144,9 +141,8 @@ def preencher_dados_nativos(conn):
     cursor.close()
     print("> 5 funcionários inseridos com sucesso.")
 
-    # ========================
     # INSERIR CLIENTES
-    # ========================
+
     clientes_data = []
     for i in range(1, 101):  # 100 clientes
         nome = f"Cliente {i}"
@@ -166,10 +162,8 @@ def preencher_dados_nativos(conn):
     cursor.close()
     print("> 100 clientes inseridos com sucesso.")
 
-    # ========================
     # INSERIR PRODUTOS
-    # ========================
-    # IDs válidos de funcionários (vendedores/gerentes/CEOs)
+
     vendedor_ids = list(range(1, 6))
 
     produtos_data = []
@@ -191,9 +185,8 @@ def preencher_dados_nativos(conn):
     cursor.close()
     print("> 20 produtos inseridos com sucesso.")
 
-    # ========================
     # INSERIR TRANSPORTADORAS
-    # ========================
+
     query_transp = """
         INSERT INTO transportadora (nome, cidade)
         VALUES ('Rapidex', 'São Paulo'),
@@ -210,9 +203,6 @@ def preencher_dados_nativos(conn):
 
     print("\n[SUCESSO] Dados nativos inseridos com sucesso!")
 
-# ------------------------------------------------------------------
-# FUNÇÃO MODIFICADA: Adicionada opção 3 para Voltar/Cancelar e emojis removidos
-# ------------------------------------------------------------------
 def criar_e_destruir_db():
     """ADMIN: Limpa o banco (TRUNCATE) e opcionalmente insere dados nativos."""
     if not check_permission(['Administrador']):
@@ -221,7 +211,7 @@ def criar_e_destruir_db():
     print("\n--- GERENCIAMENTO DE DADOS NATIVOS (ADMIN) ---")
     print("1. LIMPAR E PREENCHER (Dados de teste: clientes, produtos, etc.)")
     print("2. LIMPAR APENAS (Deixar todas as tabelas ZERADAS)")
-    print("3. Voltar/Cancelar") # Nova opção de cancelamento
+    print("3. Voltar/Cancelar")
     
     escolha_setup = input("Escolha uma opção: ").strip()
     
@@ -286,8 +276,6 @@ def criar_e_destruir_db():
             
     input("Pressione Enter para continuar...")
 
-# --- 4. Funções CRUD (Adição) ---
-
 def cadastrar_produto(conn):
     """ADMIN/FUNCIONARIO: Cadastra um novo produto."""
     if not check_permission(['Administrador', 'Funcionario']): return 
@@ -342,7 +330,6 @@ def cadastrar_cliente(conn):
     else:
         print("[ERRO] Falha ao cadastrar cliente.")
 
-# --- 5. Funções de Funcionário (Venda e Consulta) ---
 
 def realizar_venda(conn):
     """FUNCIONARIO: Realiza uma venda com 1 produto e reduz o estoque (Corrigido para evitar duplicação)."""
@@ -354,7 +341,7 @@ def realizar_venda(conn):
     try:
         id_cliente = int(input("ID do Cliente: "))
         endereco = input("Endereço de Destino: ")
-        id_transporte = input("ID da Transportadora (deixe vazio para NULA): ")
+        id_transporte = input("ID da Transportadora: ")
         id_transporte = int(id_transporte) if id_transporte.strip() else None
         id_produto = int(input("ID do Produto: "))
         qtd = int(input("Quantidade: "))
@@ -362,7 +349,6 @@ def realizar_venda(conn):
         print("[ERRO] Entrada inválida. Venda cancelada.")
         return
 
-    # Buscar informações do produto
     produto_info = execute_query(
         conn,
         "SELECT valor, quantidade_estoque FROM produto WHERE id = %s",
@@ -382,26 +368,17 @@ def realizar_venda(conn):
 
     cursor = None
     try:
-        # TENTA USAR A STORED PROCEDURE 'VENDA' (MÉTODO PREFERENCIAL)
         print("[INFO] Tentando registrar venda via Stored Procedure (Venda)...")
         cursor = conn.cursor()
         
-        # Chama a SP, que deve ser responsável por toda a transação (INSERT VENDA, INSERT ITEM, UPDATE ESTOQUE)
-        # Assumindo a SP Venda aceita: (id_cliente, id_produto, qtd, id_transporte)
         cursor.callproc("Venda", (id_cliente, id_produto, qtd, id_transporte)) 
         
         conn.commit()
         print("[SUCESSO] Venda realizada via Stored Procedure!")
 
-    except Exception as e:
-        # SE A SP FALHAR, USA O MÉTODO MANUAL COMO FALLBACK
-        print(f"[AVISO] Falha ao executar SP Venda ({e}). Usando método manual...")
-        conn.rollback() # Limpa qualquer falha parcial da SP
-        cursor = None
-        
+    except Exception:
         try:
-            # MÉTODO MANUAL ------------------------------------------
-            # 1. Criar venda
+            conn.rollback()
             cursor = conn.cursor()
             query_venda = """
                 INSERT INTO venda (data_venda, hora_venda, valor, endereco, id_cliente, id_transporte)
@@ -416,19 +393,16 @@ def realizar_venda(conn):
             if not id_venda:
                 raise Exception("Falha ao criar registro da venda manual.")
 
-            # 2. Inserir item
             query_vp = "INSERT INTO venda_produto (id_venda, id_produto, qtd, valor) VALUES (%s, %s, %s, %s)"
             execute_query(conn, query_vp, (id_venda, id_produto, qtd, total_item))
 
-            # 3. Diminuir estoque
             execute_query(conn, "UPDATE produto SET quantidade_estoque = quantidade_estoque - %s WHERE id = %s",
                           (qtd, id_produto))
 
             print(f"[SUCESSO] Venda (ID: {id_venda}) realizada manualmente! Total: R$ {total_item:.2f}")
 
-        except Exception as e_manual:
-             print(f"[ERRO] Falha completa ao processar a venda, mesmo manualmente: {e_manual}")
-             conn.rollback()
+        except:
+            pass
 
 
     finally:
@@ -467,8 +441,6 @@ def consultar_vendas(conn):
     else:
         print("Nenhuma venda encontrada.")
 
-# --- 6. Funções de Gerente (Busca, Edição, Apagar e Estatísticas) ---
-
 def listar_tabelas(conn):
     """Retorna uma lista de todas as tabelas do banco de dados (Mais robusta)."""
     cursor = conn.cursor()
@@ -482,15 +454,12 @@ def listar_tabelas(conn):
         cursor.close()
     return tabelas
     
-# --- FUNÇÃO MODIFICADA: Permite Gerente consultar todas as tabelas ---
 def consultar_registros(conn):
     """GERENTE: Permite consultar e visualizar registros de todas as tabelas."""
     if not check_permission(['Gerente', 'Administrador']): return
     
     print("\n--- Consultar Registros (GERENTE) ---")
     
-    # Chama a função genérica de visualização, permitindo que o Gerente escolha
-    # qualquer tabela.
     visualizar_tabela(conn)
 
     input("\nPressione Enter para continuar...")
@@ -518,15 +487,14 @@ def editar_registro(conn):
         return
 
     tabela = tabelas[int(escolha) - 1]
-    cursor = None # Inicializa para o bloco finally
+    cursor = None
     
-    # 1. Mostrar registros atuais da tabela
     print("\n--- Registros Atuais ---")
     visualizar_tabela(conn, tabela) 
     
     try:
         cursor = conn.cursor()
-        # 2. Obter colunas
+
         cursor.execute(f"DESCRIBE {tabela}")
         colunas_info = cursor.fetchall()
         colunas = [col[0] for col in colunas_info]
@@ -535,11 +503,10 @@ def editar_registro(conn):
             print(f"[ERRO] A tabela {tabela} não tem colunas.")
             return
 
-        id_coluna = colunas[0] # Assume que a primeira coluna é o ID
+        id_coluna = colunas[0]
 
         id_editar = input(f"\nDigite o {id_coluna} do registro que deseja editar: ").strip()
 
-        # 3. Obter dados atuais do registro
         cursor.execute(f"SELECT * FROM {tabela} WHERE {id_coluna} = %s", (id_editar,))
         registro_raw = cursor.fetchone()
         
@@ -547,11 +514,8 @@ def editar_registro(conn):
             print("[ERRO] Registro não encontrado.")
             return
             
-        # Converter para dicionário para facilitar o acesso por nome da coluna
         registro = dict(zip(colunas, registro_raw))
 
-
-        # 4. Editar campos
         updates = []
         novos_valores = []
         
@@ -571,7 +535,6 @@ def editar_registro(conn):
             print("Nenhuma alteração feita.")
             return
 
-        # 5. Atualizar no banco
         set_clause = ", ".join(updates)
         sql = f"UPDATE {tabela} SET {set_clause} WHERE {id_coluna} = %s"
         novos_valores.append(id_editar)
@@ -585,10 +548,9 @@ def editar_registro(conn):
     except Exception as e:
         print(f"[ERRO GERAL] {e}")
     finally:
-        if cursor: # Fechamento seguro
+        if cursor:
             cursor.close()
 
-# --- FUNÇÃO MODIFICADA: Permite Gerente apagar registro por ID em qualquer tabela ---
 def apagar_registro(conn):
     """GERENTE / ADMIN: Apagar Registros (Linha por ID) de qualquer tabela."""
     if not check_permission(['Gerente', 'Administrador']): 
@@ -613,11 +575,9 @@ def apagar_registro(conn):
 
     tabela = tabelas[int(escolha) - 1]
     
-    # 1. Mostrar registros atuais da tabela
     visualizar_tabela(conn, tabela) 
 
-    # 2. Obter coluna ID
-    cursor = None # Inicializa para o bloco finally
+    cursor = None
     try:
         cursor = conn.cursor()
         cursor.execute(f"DESCRIBE {tabela}")
@@ -628,14 +588,14 @@ def apagar_registro(conn):
             print(f"[ERRO] A tabela {tabela} não tem colunas.")
             return
 
-        id_coluna = colunas[0] # Assume que a primeira coluna é o ID
+        id_coluna = colunas[0]
     except Exception as e:
         print(f"[ERRO] Falha ao obter colunas da tabela {tabela}: {e}")
         return
     finally:
         if cursor:
             cursor.close()
-        cursor = None # Limpa para a próxima utilização
+        cursor = None
 
     try:
         registro_id = int(input(f"\nDigite o {id_coluna} do registro que deseja APAGAR: "))
@@ -650,7 +610,6 @@ def apagar_registro(conn):
 
     try:
         cursor = conn.cursor()
-        # Apenas DELETE WHERE ID, sem TRUNCATE
         cursor.execute(f"DELETE FROM {tabela} WHERE {id_coluna} = %s", (registro_id,))
         conn.commit()
         
@@ -661,7 +620,7 @@ def apagar_registro(conn):
 
 
     except mysql.connector.IntegrityError as err:
-        if err.errno == 1451:  # Violação de chave estrangeira
+        if err.errno == 1451:
             print(f"[ERRO] Não foi possível apagar: O registro está vinculado a outros dados no DB.")
         else:
             print(f"[ERRO] Falha ao apagar: {err}")
@@ -685,7 +644,6 @@ def executar_reajuste(conn):
             print("[ERRO] Categoria inválida.")
             return
 
-        # Chamada à Stored Procedure
         cursor = conn.cursor(dictionary=True)
         cursor.callproc("Reajuste", (percentual, categoria))
         conn.commit()
@@ -708,25 +666,24 @@ def executar_sorteio(conn):
     print("\n--- Executar Sorteio de Cliente (SP Sorteio) ---")
     cursor = None
     try:
-        # Usa cursor.callproc para lidar melhor com Stored Procedures que retornam múltiplos conjuntos
+
         cursor = conn.cursor(dictionary=True)
         cursor.callproc("Sorteio")
 
         sorteado = None
-        # Itera sobre todos os conjuntos de resultados que o SP possa retornar
+
         for result_set in cursor.stored_results():
             dados = result_set.fetchall()
-            if dados and 'cliente_sorteado' in dados[0]: # Procura pelo SELECT final com a coluna esperada
+            if dados and 'cliente_sorteado' in dados[0]:
                 sorteado = dados[0]
                 break 
             
-            # Se o SP retornar a mensagem "Sem clientes para sortear", captura a mensagem
             if dados and 'mensagem' in dados[0]:
                 print(f"[INFO] {dados[0]['mensagem']}")
                 return
 
         if sorteado:
-            conn.commit() # Confirma o INSERT do voucher
+            conn.commit()
             print("\nO cliente sorteado é:")
             print(f"  ID: {sorteado['cliente_sorteado']}")
             print(f"  Valor do Voucher: R$ {sorteado['valor_voucher']:.2f}")
@@ -764,12 +721,10 @@ def executar_estatisticas(conn):
             print(f"\n[Conjunto #{resultado_idx}]")
             print("-" * 70)
 
-            # Descobre os nomes das colunas retornadas dinamicamente
             colunas = list(dados[0].keys())
             print(" | ".join(colunas))
             print("-" * 70)
 
-            # Imprime todas as linhas do conjunto
             for linha in dados:
                 valores = [str(v) if v is not None else '-' for v in linha.values()]
                 print(" | ".join(valores))
@@ -787,9 +742,6 @@ def executar_estatisticas(conn):
     finally:
         if cursor:
             cursor.close()
-
-
-# --- 7. Funções Auxiliares (CRUD Genérico e Procedures) e Menus de Navegação ---
 
 
 def cadastrar_generico(conn):
@@ -816,7 +768,6 @@ def cadastrar_generico(conn):
 
     tabela = tabelas[int(escolha) - 1]
 
-    # Obter estrutura da tabela
     cursor.execute(f"DESCRIBE {tabela}")
     colunas = cursor.fetchall()
 
@@ -826,15 +777,14 @@ def cadastrar_generico(conn):
     for col in colunas:
         nome = col[0]
         tipo = col[1]
-        extra = col[5] # Coluna 'Extra' contém 'auto_increment'
+        extra = col[5]
 
-        # Ignora campos que são auto_increment ou explicitamente 'id'
         if "auto_increment" in extra or nome.lower() == "id":
             continue
             
         valor = input(f"Digite o valor para {nome} ({tipo}): ")
         valores.append(valor)
-        colunas_a_inserir.append(nome) # Adiciona o nome da coluna para a query
+        colunas_a_inserir.append(nome)
         
     if not valores:
         print("[INFO] Nenhuma coluna para inserir encontrada (apenas IDs auto-incremento?).")
@@ -876,7 +826,6 @@ def deletar_generico(conn):
         return
     tabela = tabelas[int(escolha) - 1]
 
-    # Novo menu de exclusão
     while True:
         clear_screen()
         print(f"--- OPÇÕES DE EXCLUSÃO PARA A TABELA '{tabela.upper()}' (ADMIN) ---")
@@ -887,7 +836,7 @@ def deletar_generico(conn):
         op_del = input("\nEscolha a operação de exclusão: ").strip()
 
         if op_del == '1':
-            # --- Opção 1: TRUNCATE TABLE (Apenas ADMIN) ---
+
             print(f"\n[ATENÇÃO] Você está prestes a DELETAR TODOS OS DADOS da tabela '{tabela.upper()}'!")
             print("Atenção: Esta ação limpa todos os registros e reseta o contador de ID (auto-incremento).")
             confirm = input("Confirme a exclusão total e permanente (s/n): ").lower()
@@ -899,7 +848,7 @@ def deletar_generico(conn):
             cursor = None
             try:
                 cursor = conn.cursor()
-                # Desativa temporariamente a checagem de FK para TRUNCATE (boa prática)
+
                 cursor.execute(f"SET FOREIGN_KEY_CHECKS = 0;")
                 cursor.execute(f"TRUNCATE TABLE {tabela};")
                 cursor.execute(f"SET FOREIGN_KEY_CHECKS = 1;")
@@ -914,9 +863,7 @@ def deletar_generico(conn):
             break 
             
         elif op_del == '2':
-            # --- Opção 2: DELETE WHERE ID (Deletar Linha) ---
-            
-            # Lista os registros da tabela para o usuário escolher o ID
+
             visualizar_tabela(conn, tabela) 
             
             id_registro = input("\nDigite o ID do registro que deseja deletar: ").strip()
@@ -965,37 +912,18 @@ def calcular_idade(conn):
         if cursor: 
             cursor.close()
 
-def somar_frete(conn):
-    """Executa a function Soma_Frete(venda_id)."""
-    if not check_permission(['Administrador']): return
-    cursor = None
-    try:
-        venda_id = int(input("Digite o ID da venda: "))
-        cursor = conn.cursor()
-        # Nota: A função Soma_Frete pode não existir no SQL provido
-        cursor.execute(f"SELECT Soma_Frete(%s);", (venda_id,))
-        frete = cursor.fetchone()[0]
-        print(f"O frete total da venda (ID={venda_id}) é R$ {frete:.2f}.")
-    except mysql.connector.Error as err:
-        print(f"[ERRO SQL] {err}")
-    except ValueError:
-        print("[ERRO] ID da venda inválido.")
-    finally:
-        if cursor:
-            cursor.close()
-
 def calcular_arrecadado(conn):
     """Executa a function Arrecadado(data, id_vendedor) que calcula total de vendas."""
     if not check_permission(['Administrador']): return
     cursor = None
     try:
-        # A função Arrecadado no SQL espera 2 argumentos (data, id_vendedor).
+
         print("Para usar Arrecadado(data, id_vendedor) é necessário fornecer os parâmetros.")
         data_param = input("Digite a data (AAAA-MM-DD): ")
         id_vendedor_param = int(input("Digite o ID do Vendedor: "))
 
         cursor = conn.cursor()
-        # Chamando como FUNCTION (SELECT) e não como PROCEDURE (CALL)
+
         cursor.execute(f"SELECT Arrecadado(%s, %s);", (data_param, id_vendedor_param))
         total_arrecadado = cursor.fetchone()[0]
 
@@ -1023,7 +951,6 @@ def visualizar_tabela(conn, tabela_selecionada=None):
     
     cursor = conn.cursor()
 
-    # Obter todas as tabelas do banco de dados atual
     cursor.execute("SHOW TABLES;")
     tabelas = [t[0] for t in cursor.fetchall()]
 
@@ -1032,7 +959,6 @@ def visualizar_tabela(conn, tabela_selecionada=None):
         cursor.close()
         return []
     
-    # Se a tabela não foi selecionada (chamada do menu Admin/Gerente), o usuário escolhe
     if not tabela_selecionada:
         print("\n--- Tabelas disponíveis para Consulta ---")
         for i, tabela in enumerate(tabelas, start=1):
@@ -1055,7 +981,6 @@ def visualizar_tabela(conn, tabela_selecionada=None):
             cursor.close()
             return tabelas
 
-    # Buscar dados da tabela
     try:
         cursor.execute(f"SELECT * FROM {tabela_selecionada};")
         registros = cursor.fetchall()
@@ -1065,7 +990,7 @@ def visualizar_tabela(conn, tabela_selecionada=None):
         if not registros:
             print("[VAZIO] Nenhum registro encontrado.")
         else:
-            # Usando tabulate para uma saída mais formatada
+
             data_list = []
             for linha in registros:
                 data_list.append([str(c) if c is not None else 'NULL' for c in linha])
@@ -1078,9 +1003,6 @@ def visualizar_tabela(conn, tabela_selecionada=None):
     cursor.close()
     return tabelas 
     
-# -------------------------------------------------------------
-# Os menus abaixo usam as funções corrigidas acima e na Seção 6.
-# -------------------------------------------------------------
 
 def menu_admin(conn):
     """Menu para o Administrador (todas as permissões do sistema)."""
@@ -1096,15 +1018,9 @@ def menu_admin(conn):
 
         choice = input("\nEscolha uma opção: ").strip()
 
-        # ---------------------------
-        # 1) GERENCIAR SETUP DE DADOS (Limpar e/ou Preencher)
-        # ---------------------------
         if choice == '1':
             criar_e_destruir_db()
 
-        # ---------------------------
-        # 2) CRUD COMPLETO
-        # ---------------------------
         elif choice == '2':
             while True:
                 clear_screen()
@@ -1130,20 +1046,16 @@ def menu_admin(conn):
                 if sub_choice == '4': break
 
 
-        # ---------------------------
-        # 3) PROCEDURES E FUNÇÕES
-        # ---------------------------
         elif choice == '3':
             while True:
                 clear_screen()
                 print("--- PROCEDURES E FUNÇÕES DE GESTÃO ---")
                 print("1. Reajuste Salarial (Procedure Reajuste)")
                 print("2. Calcular Idade de um Cliente (Function Calcula_Idade)")
-                print("3. Somar Frete (Function Soma_Frete)")
-                print("4. Executar Sorteio de Cliente (SP Sorteio)")
-                print("5. Calcular Valor Arrecadado Total (Function Arrecadado)")
-                print("6. Estatísticas Gerais (Procedure Estatisticas)")
-                print("7. Registrar Venda (Procedure Venda)")
+                print("3. Executar Sorteio de Cliente (SP Sorteio)")
+                print("4. Calcular Valor Arrecadado Total (Function Arrecadado)")
+                print("5. Estatísticas Gerais (Procedure Estatisticas)")
+                print("6. Registrar Venda (Procedure Venda)")
                 print("0. Voltar")
                 sub_choice = input("Escolha uma opção: ").strip()
 
@@ -1152,14 +1064,12 @@ def menu_admin(conn):
                 elif sub_choice == '2':
                     calcular_idade(conn) 
                 elif sub_choice == '3':
-                    somar_frete(conn) 
-                elif sub_choice == '4':
                     executar_sorteio(conn)
-                elif sub_choice == '5':
+                elif sub_choice == '4':
                     calcular_arrecadado(conn) 
-                elif sub_choice == '6':
+                elif sub_choice == '5':
                     executar_estatisticas(conn)
-                elif sub_choice == '7':
+                elif sub_choice == '6':
                     realizar_venda(conn)
                 elif sub_choice == '0':
                     break
@@ -1170,16 +1080,10 @@ def menu_admin(conn):
                 if sub_choice == '0': break
 
 
-        # ---------------------------
-        # 4) CONSULTAS LIVRES 
-        # ---------------------------
         elif choice == '4':
-            visualizar_tabela(conn) # Chama a função genérica sem parâmetro
+            visualizar_tabela(conn)
             input("Pressione Enter para continuar...")
 
-        # ---------------------------
-        # 0) SAIR
-        # ---------------------------
         elif choice == '0':
             break
 
@@ -1196,7 +1100,7 @@ def menu_gerente(conn):
         print("--- CRUD (Todas as Tabelas) ---")
         print("1. Consultar Registros")
         print("2. Editar Registro (por ID)")
-        print("3. Apagar Registro (por ID)") # Emojis removidos
+        print("3. Apagar Registro (por ID)")
         print("--- CONSULTA AVANÇADA ---")
         print("4. Executar Estatísticas de Vendas")
         print("0. Voltar ao Menu Principal / Sair")
@@ -1243,8 +1147,6 @@ def menu_principal(conn):
     else:
         print("Você está logado, mas não tem acesso a nenhum menu.")
         time.sleep(2)
-
-# --- 8. Função Principal (Login) ---
 
 def login():
     """Realiza o login e inicia o sistema."""
