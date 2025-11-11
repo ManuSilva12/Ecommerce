@@ -6,10 +6,7 @@ DROP USER IF EXISTS 'admin'@'localhost';
 DROP USER IF EXISTS 'gerente'@'localhost';
 DROP USER IF EXISTS 'funcionario'@'localhost';
 
-
--- ===============================================
 -- 1) TABELAS
--- ===============================================
 
 CREATE TABLE cliente (
     id INT PRIMARY KEY AUTO_INCREMENT,
@@ -108,9 +105,7 @@ CREATE TABLE voucher (
     FOREIGN KEY (id_cliente) REFERENCES cliente(id)
 );
 
--- ===============================================
 -- 2) FUNÇÕES
--- ===============================================
 
 DELIMITER $$
 
@@ -127,7 +122,25 @@ BEGIN
     RETURN idade;
 END$$
 
--- Soma_fretes(destino) 
+-- Soma_fretes(destino)
+DROP FUNCTION IF EXISTS ecommerce.Soma_fretes;
+DELIMITER $$
+CREATE FUNCTION ecommerce.Soma_fretes(p_destino VARCHAR(100))
+RETURNS DECIMAL(10,2)
+DETERMINISTIC
+READS SQL DATA
+BEGIN
+    DECLARE total DECIMAL(10,2) DEFAULT 0.00;
+    SELECT IFNULL(SUM(t.valor),0.00) INTO total
+    FROM transporte t
+    JOIN venda v ON v.id = t.id_venda
+    -- normaliza e compara em lowercase e sem espaços nas extremidades
+    WHERE LOWER(TRIM(v.endereco)) = LOWER(TRIM(p_destino));
+    RETURN total;
+END$$
+DELIMITER ;
+
+DELIMITER $$
 
 -- Arrecadado(data, id_vendedor)
 CREATE FUNCTION Arrecadado(p_data DATE, p_id_vendedor INT)
@@ -146,9 +159,7 @@ END$$
 
 DELIMITER ;
 
--- ===============================================
 -- 3) TRIGGERS
--- ===============================================
 
 DELIMITER $$
 
@@ -216,9 +227,7 @@ END$$
 
 DELIMITER ;
 
--- ===============================================
 -- 5) VIEWS (3 views conforme solicitado)
--- ===============================================
 
 -- 1) Total por produto (inclui vendedor)
 CREATE OR REPLACE VIEW ecommerce.v_produto_vendas_totais AS
@@ -261,9 +270,7 @@ JOIN venda v       ON v.id = vp.id_venda
 JOIN produto p     ON p.id = vp.id_produto
 GROUP BY p.id, p.nome, YEAR(v.data_venda), MONTH(v.data_venda);
 
--- ===============================================
 -- 4) PROCEDURES
--- ===============================================
 
 DELIMITER $$
 
@@ -300,42 +307,70 @@ proc_label: BEGIN
     END IF;
 END$$
 DELIMITER ;
-DELIMITER $$
+
 -- Venda: reduz estoque
-CREATE PROCEDURE Venda(p_id_produto INT, p_qtd INT, p_id_cliente INT, p_endereco VARCHAR(100))
+
+DELIMITER $$
+
+CREATE PROCEDURE Venda(
+    IN p_id_produto INT,
+    IN p_qtd INT,
+    IN p_id_cliente INT,
+    IN p_endereco VARCHAR(100)
+)
 BEGIN
-    DECLARE v_valor DECIMAL(10,2);
-    DECLARE v_id_venda INT;
+    DECLARE v_valor_produto DECIMAL(10,2);
     DECLARE v_estoque INT;
+    DECLARE v_id_venda INT;
+    DECLARE v_valor_total DECIMAL(10,2);
+    DECLARE v_valor_transporte DECIMAL(10,2);
 
-    SELECT quantidade_estoque, valor INTO v_estoque, v_valor FROM produto WHERE id = p_id_produto FOR UPDATE;
+    -- Verifica se o produto existe e pega valor + estoque
+    SELECT quantidade_estoque, valor
+    INTO v_estoque, v_valor_produto
+    FROM produto
+    WHERE id = p_id_produto
+    FOR UPDATE;
 
-    -- checar estoque
     IF v_estoque IS NULL THEN
-        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Produto não existe.';
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Produto não existe.';
     END IF;
 
     IF v_estoque < p_qtd THEN
-        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Estoque insuficiente para realizar a venda.';
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Estoque insuficiente.';
     END IF;
 
-    -- inserir venda
+    -- Calcula valores
+    SET v_valor_total = v_valor_produto * p_qtd;
+    SET v_valor_transporte = v_valor_total * 0.05; -- frete = 5%
+
+    -- Cria a venda
     INSERT INTO venda (data_venda, hora_venda, valor, endereco, id_cliente)
-    VALUES (CURDATE(), CURTIME(), v_valor * p_qtd, p_endereco, p_id_cliente);
+    VALUES (CURDATE(), CURTIME(), v_valor_total, p_endereco, p_id_cliente);
 
     SET v_id_venda = LAST_INSERT_ID();
 
-    -- inserir item da venda
-    INSERT INTO venda_produto (id_venda, id_produto, qtd, valor)
-    VALUES (v_id_venda, p_id_produto, p_qtd, v_valor * p_qtd);
+    -- Relaciona o produto à venda
+    INSERT INTO venda_produto (id_venda, id_produto, qtd, valor, obs)
+    VALUES (v_id_venda, p_id_produto, p_qtd, v_valor_produto, CONCAT('Venda de ', p_qtd, ' unidade(s).'));
 
-    -- reduzir estoque
-    UPDATE produto 
-    SET quantidade_estoque = quantidade_estoque - p_qtd 
+    -- Atualiza estoque
+    UPDATE produto
+    SET quantidade_estoque = quantidade_estoque - p_qtd
     WHERE id = p_id_produto;
+
+    -- Registra transporte
+    INSERT INTO transporte (id_venda, valor)
+    VALUES (v_id_venda, v_valor_transporte);
 END$$
 
-DROP PROCEDURE IF EXISTS EstatisticasCompletas$$
+DELIMITER ;
+
+
+DROP PROCEDURE IF EXISTS EstatisticasCompletas
+DELIMITER $$
 
 CREATE PROCEDURE EstatisticasCompletas()
 BEGIN
@@ -372,9 +407,8 @@ BEGIN
         LIMIT 1;
     END IF;
 
-    -- ============================
     -- 1) Resultado: Produto MAIS vendido (com vendedor, total qtd e ganho)
-    -- ============================
+
     SELECT
         tp.produto_id,
         tp.produto_nome,
@@ -386,9 +420,8 @@ BEGIN
     LEFT JOIN vendedor v ON v.id = tp.id_vendedor
     WHERE tp.produto_id = @produto_mais_id;
 
-    -- ============================
     -- 2) Mês de maior e mês de menor vendas do produto MAIS vendido
-    -- ============================
+
     -- Mês com maior qtd
     SELECT
         YEAR(venda.data_venda) AS ano,
@@ -415,9 +448,8 @@ BEGIN
     ORDER BY qtd_vendida_no_mes ASC, ganho_no_mes ASC
     LIMIT 1;
 
-    -- ============================
     -- 3) Resultado: Produto MENOS vendido (com vendedor, total qtd e ganho)
-    -- ============================
+    
     SELECT
         tp.produto_id,
         tp.produto_nome,
@@ -429,9 +461,8 @@ BEGIN
     LEFT JOIN vendedor v ON v.id = tp.id_vendedor
     WHERE tp.produto_id = @produto_menos_id;
 
-    -- ============================
     -- 4) Mês de maior e mês de menor vendas do produto MENOS vendido
-    -- ============================
+
     SELECT
         YEAR(venda.data_venda) AS ano,
         MONTH(venda.data_venda) AS mes,
@@ -462,18 +493,14 @@ END$$
 
 DELIMITER ;
 
--- ===============================================
--- USUÁRIOS, ROLES E PERMISSÕES (simplificado)
--- ===============================================
+-- USUÁRIOS, ROLES E PERMISSÕES
 
 -- Cria roles
 CREATE ROLE IF NOT EXISTS 'role_admin';
 CREATE ROLE IF NOT EXISTS 'role_gerente';
 CREATE ROLE IF NOT EXISTS 'role_funcionario';
 
--- =====================================================
 -- Permissões para cada ROLE
--- =====================================================
 
 -- Admin: total controle
 GRANT ALL PRIVILEGES ON ecommerce.* TO 'role_admin';
@@ -495,18 +522,18 @@ GRANT SELECT ON ecommerce.v_vendas_mensais_produto TO 'role_gerente';
 -- Funcionário: acesso limitado (leitura e inserção)
 GRANT INSERT, SELECT ON ecommerce.venda TO 'role_funcionario';
 GRANT INSERT, SELECT ON ecommerce.venda_produto TO 'role_funcionario';
-GRANT SELECT ON ecommerce.produto TO 'role_funcionario';
+GRANT SELECT, UPDATE ON ecommerce.produto TO 'role_funcionario';
 GRANT SELECT ON ecommerce.cliente TO 'role_funcionario';
 GRANT EXECUTE ON ecommerce.* TO 'role_funcionario';
+GRANT UPDATE (quantidade_estoque) ON ecommerce.produto TO 'role_funcionario';
 
 -- Views úteis para funcionário
 GRANT SELECT ON ecommerce.v_produto_vendas_totais TO 'role_funcionario';
 GRANT SELECT ON ecommerce.v_vendas_mensais_produto TO 'role_funcionario';
 
--- =====================================================
 -- Criação dos usuários e atribuição de roles
--- =====================================================
-CREATE USER IF NOT EXISTS 'admin'@'localhost' IDENTIFIED BY 'Senhateste1!!';
+
+CREATE USER IF NOT EXISTS 'admin'@'localhost' IDENTIFIED BY 'Senhateste1!';
 CREATE USER IF NOT EXISTS 'gerente'@'localhost' IDENTIFIED BY 'Senhateste1!';
 CREATE USER IF NOT EXISTS 'funcionario'@'localhost' IDENTIFIED BY 'Senhateste1!';
 
@@ -516,10 +543,7 @@ GRANT 'role_funcionario' TO 'funcionario'@'localhost';
 
 FLUSH PRIVILEGES;
 
-
--- ===============================================
 -- 6) INSERÇÕES DE TESTE (opcional)
--- ===============================================
 
 INSERT INTO vendedor (nome, salario) VALUES 
 ('João Gabriel', 1500.00),
@@ -531,12 +555,114 @@ VALUES ('Lucas', 20, 'm', '2004-12-05');
 INSERT INTO produto (nome, valor, quantidade_estoque, id_vendedor)
 VALUES ('Biscoito', 100.00, 10, 1);
 
+INSERT INTO transportadora(nome, cidade) VALUES ('SEDEX', 'Olinda');
+
 INSERT INTO venda (data_venda, hora_venda, valor, endereco, id_cliente)
 VALUES (CURDATE(), CURTIME(), 100.00, 'Recife', 1);
+INSERT INTO transporte(id_venda,id_transportadora,valor) VALUES (1,1,10.00);
+-- clientes
 
--- Teste de funções
-SELECT Calcula_idade(1) AS idade_cliente;
-
-SELECT Arrecadado(CURDATE(),1) AS total_arrecadado;
-INSERT INTO transportadora(nome,cidade) VALUES ("Socorro",'Jesus');
-INSERT INTO transporte(valor) VALUES (100.00);
+INSERT INTO cliente (nome, idade, sexo, data_nascimento) VALUES
+('Alice Silva', 25, 'f', '1998-07-14'),
+('Bruno Costa', 32, 'm', '1991-03-22'),
+('Carla Souza', 28, 'f', '1995-11-30'),
+('Daniel Lima', 40, 'm', '1983-05-10'),
+('Eduarda Fernandes', 19, 'f', '2004-02-05'),
+('Fernando Alves', 35, 'm', '1988-09-17'),
+('Gabriela Rocha', 23, 'f', '2000-12-03'),
+('Henrique Martins', 30, 'm', '1993-06-18'),
+('Isabela Pereira', 27, 'f', '1996-08-25'),
+('João Santos', 33, 'm', '1990-01-09'),
+('Karina Dias', 29, 'f', '1994-10-15'),
+('Leonardo Melo', 38, 'm', '1985-04-02'),
+('Mariana Castro', 26, 'f', '1997-07-21'),
+('Nicolas Cardoso', 31, 'm', '1992-11-11'),
+('Olívia Moreira', 24, 'f', '1999-03-29'),
+('Pedro Almeida', 36, 'm', '1987-12-12'),
+('Quésia Nunes', 22, 'f', '2001-05-07'),
+('Rafael Teixeira', 39, 'm', '1984-08-23'),
+('Sofia Ribeiro', 21, 'f', '2002-09-01'),
+('Tiago Gomes', 34, 'm', '1989-02-28'),
+('Ursula Carvalho', 27, 'f', '1996-06-14'),
+('Victor Andrade', 28, 'm', '1995-10-30'),
+('Wesley Santana', 37, 'm', '1986-01-19'),
+('Ximena Pacheco', 23, 'f', '2000-04-06'),
+('Yuri Lopes', 32, 'm', '1991-07-12'),
+('Zara Moura', 25, 'f', '1998-11-09'),
+('Arthur Campos', 29, 'm', '1994-03-21'),
+('Bianca Faria', 30, 'f', '1993-12-05'),
+('Caio Ribeiro', 31, 'm', '1992-06-17'),
+('Diana Lopes', 24, 'f', '1999-09-29'),
+('Emanuel Costa', 35, 'm', '1988-01-08'),
+('Fabiana Martins', 26, 'f', '1997-04-19'),
+('Gustavo Almeida', 33, 'm', '1990-10-02'),
+('Helena Rocha', 28, 'f', '1995-02-23'),
+('Igor Souza', 36, 'm', '1987-05-30'),
+('Júlia Fernandes', 22, 'f', '2001-07-15'),
+('Kevin Dias', 27, 'm', '1996-12-28'),
+('Lara Melo', 25, 'f', '1998-08-10'),
+('Mateus Castro', 38, 'm', '1985-03-03'),
+('Natália Nunes', 23, 'f', '2000-01-21'),
+('Otávio Teixeira', 29, 'm', '1994-11-11'),
+('Patrícia Ribeiro', 31, 'f', '1992-05-25'),
+('Quentin Gomes', 34, 'm', '1989-09-14'),
+('Raquel Carvalho', 28, 'f', '1995-06-19'),
+('Samuel Andrade', 37, 'm', '1986-12-07'),
+('Tatiane Santana', 26, 'f', '1997-03-02'),
+('Ulisses Pacheco', 32, 'm', '1991-07-26'),
+('Vanessa Lopes', 24, 'f', '1999-10-04'),
+('William Moura', 35, 'm', '1988-02-15'),
+('Xavier Campos', 30, 'm', '1993-08-21'),
+('Yasmin Faria', 27, 'f', '1996-11-30'),
+('Zeca Ribeiro', 33, 'm', '1990-01-27'),
+('Ana Souza', 25, 'f', '1998-05-11'),
+('Bruno Fernandes', 36, 'm', '1987-09-09'),
+('Carla Dias', 28, 'f', '1995-12-01'),
+('Diego Melo', 31, 'm', '1992-04-17'),
+('Elaine Castro', 29, 'f', '1994-07-28'),
+('Fábio Nunes', 32, 'm', '1991-03-05'),
+('Giovana Teixeira', 24, 'f', '1999-08-16'),
+('Heitor Ribeiro', 27, 'm', '1996-11-20'),
+('Isadora Gomes', 30, 'f', '1993-02-02'),
+('Jonas Carvalho', 35, 'm', '1988-06-13'),
+('Kelly Andrade', 23, 'f', '2000-09-09'),
+('Leandro Santana', 38, 'm', '1985-12-22'),
+('Marina Pacheco', 26, 'f', '1997-01-14'),
+('Nathan Lopes', 31, 'm', '1992-05-30'),
+('Olívia Moura', 25, 'f', '1998-08-07'),
+('Paulo Campos', 34, 'm', '1989-11-18'),
+('Quésia Faria', 29, 'f', '1994-03-29'),
+('Ricardo Ribeiro', 36, 'm', '1987-07-03'),
+('Sabrina Souza', 28, 'f', '1995-12-15'),
+('Thiago Fernandes', 33, 'm', '1990-06-09'),
+('Úrsula Dias', 27, 'f', '1996-01-26'),
+('Vitor Melo', 32, 'm', '1991-09-10'),
+('Wanda Castro', 24, 'f', '1999-04-21'),
+('Xander Nunes', 30, 'm', '1993-11-05'),
+('Yara Teixeira', 26, 'f', '1997-08-13'),
+('Zion Ribeiro', 31, 'm', '1992-02-28'),
+('Amanda Gomes', 23, 'f', '2000-07-07'),
+('Bruno Carvalho', 35, 'm', '1988-10-20'),
+('Caroline Andrade', 29, 'f', '1994-05-15'),
+('Diego Santana', 28, 'm', '1995-01-02'),
+('Evelyn Pacheco', 27, 'f', '1996-03-08'),
+('Felipe Lopes', 34, 'm', '1989-07-23'),
+('Gabriela Moura', 25, 'f', '1998-11-17'),
+('Hugo Campos', 36, 'm', '1987-04-04'),
+('Isabel Faria', 30, 'f', '1993-06-28'),
+('João Ribeiro', 32, 'm', '1991-12-12'),
+('Karina Souza', 24, 'f', '1999-09-30'),
+('Lucas Fernandes', 33, 'm', '1990-05-06'),
+('Mariana Dias', 26, 'f', '1997-02-19'),
+('Natan Melo', 31, 'm', '1992-08-21'),
+('Olívia Castro', 28, 'f', '1995-11-03'),
+('Paulo Nunes', 35, 'm', '1988-01-29'),
+('Queila Teixeira', 23, 'f', '2000-06-10'),
+('Rafael Ribeiro', 30, 'm', '1993-03-25'),
+('Sofia Gomes', 27, 'f', '1996-09-18'),
+('Thiago Carvalho', 36, 'm', '1987-12-07'),
+('Úrsula Andrade', 29, 'f', '1994-04-22'),
+('Victor Santana', 32, 'm', '1991-08-11'),
+('Wesley Pacheco', 25, 'm', '1998-02-14'),
+('Yasmin Lopes', 26, 'f', '1997-10-30'),
+('Zara Moura', 31, 'f', '1992-01-05');
